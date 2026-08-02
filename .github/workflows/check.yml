@@ -1,0 +1,49 @@
+name: heartbeat check
+
+on:
+  schedule:
+    - cron: '0 12 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (list what would change, do not actually flip visibility)'
+        type: boolean
+        default: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute heartbeat age
+        id: age
+        run: |
+          last=$(git log -1 --format=%ct -- heartbeat.txt)
+          now=$(date +%s)
+          age_days=$(( (now - last) / 86400 ))
+          echo "age_days=$age_days" >> "$GITHUB_OUTPUT"
+          echo "Last heartbeat: $(git log -1 --format=%cd -- heartbeat.txt), age: ${age_days} days"
+
+      - name: Trigger check
+        if: steps.age.outputs.age_days >= 4
+        env:
+          GH_TOKEN: ${{ secrets.DEADMAN_PAT }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+        run: |
+          echo "Heartbeat is ${{ steps.age.outputs.age_days }} days stale (threshold: 4). Proceeding."
+          repos=$(gh repo list kyotodesertfox --visibility private --limit 200 --json name --jq '.[].name')
+          for r in $repos; do
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "[dry run] would make kyotodesertfox/$r public"
+            else
+              echo "making kyotodesertfox/$r public"
+              gh repo edit "kyotodesertfox/$r" --visibility public --accept-visibility-change-consequences
+            fi
+          done
+
+      - name: No action needed
+        if: steps.age.outputs.age_days < 4
+        run: echo "Heartbeat is ${{ steps.age.outputs.age_days }} days old, under the 4-day threshold. Nothing to do."
